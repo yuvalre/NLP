@@ -22,9 +22,48 @@ CAP_PERIOD = '*CAP_PERIOD*'
 FIRST_WORD = '*FIRST_WORD*'
 INIT_CAP = '*INIT_CAP*'
 
+PREFIX_ANTI = '*ANTI*'
+PREFIX_DIS = '*DIS*'
+PREFIX_UNDER = '*UNDER*'
+PREFIX_UN = '*UN*'
+PREFIX_SEMI = '*SEMI*'
+PREFIX_NON = '*NON*'
+PREFIX_MID = '*MID*'
+PREFIX_PRE = '*PRE*'
+
+PREFIXES = [PREFIX_ANTI, PREFIX_DIS, PREFIX_UNDER,
+            PREFIX_UN, PREFIX_SEMI, PREFIX_NON, PREFIX_MID, PREFIX_PRE]
+PREFIXES_STRINGS = ['anti', 'dis', 'under', 'un', 'semi', 'now', 'mid', 'pre']
+
+SUFFIX_ABLE = '*SUFFIX_ABLE*'
+SUFFIX_IBLE = '*SUFFIX_IBLE*'
+SUFFIX_AL = '*SUFFIX_AL*'
+SUFFIX_IAL = '*SUFFIX_IAL*'
+SUFFIX_EN = '*SUFFIX_EN*'
+SUFFIX_ER = '*SUFFIX_ER*'
+SUFFIX_EST = '*SUFFIX_EST*'
+SUFFIX_FUL = '*SUFFIX_FUL*'
+SUFFIX_IC = '*SUFFIX_IC*'
+SUFFIX_ITIVE = '*SUFFIX_ITIVE*'
+SUFFIX_ATIVE = '*SUFFIX_ATIVE*'
+SUFFIX_IVE = '*SUFFIX_IVE*'
+SUFFIX_LESS = '*SUFFIX_LESS*'
+SUFFIX_LY = '*SUFFIX_LY*'
+SUFFIX_MENT = '*SUFFIX_MENT*'
+SUFFIX_NESS = '*SUFFIX_NESS*'
+
+
+SUFFIXES = [SUFFIX_ABLE, SUFFIX_IBLE, SUFFIX_IAL, SUFFIX_EN, SUFFIX_ER, SUFFIX_AL,
+            SUFFIX_EST, SUFFIX_FUL, SUFFIX_IC,
+            SUFFIX_ITIVE, SUFFIX_ATIVE, SUFFIX_IVE, SUFFIX_LESS, SUFFIX_LY,
+            SUFFIX_MENT, SUFFIX_NESS]
+SUFFIXES_STRINGS = ['able', 'ible', 'ial', 'en', 'er', 'al', 'est', 'ful', 'ic',
+                    'itive', 'ative', 'ive', 'less', 'ly', 'ment', 'ness']
 
 PSUEDOWORDS = {TWO_DIGIT_NUM, FOUR_DIGIT_NUM, DIGIT_AND_ALPHA, DIGIT_AND_DASH, DIGIT_AND_SLASH, DIGIT_AND_COMMA,
                DIGIT_AND_PERIOD, OTHER_NUMBER, ALL_CAPS, CAP_PERIOD, FIRST_WORD, INIT_CAP, UNKNOWN_WORD}
+PSUEDOWORDS |= set(SUFFIXES)
+PSUEDOWORDS |= set(PREFIXES)
 
 
 def get_psuedoword(word, t):
@@ -43,6 +82,8 @@ def get_psuedoword(word, t):
             return FOUR_DIGIT_NUM
     if word.isalnum():
         return DIGIT_AND_ALPHA
+    if word.isnumeric():
+        return OTHER_NUMBER
     if all(c in DIGITS_SET.union('-') for c in word):
         return DIGIT_AND_DASH
     if all(c in DIGITS_SET.union('/') for c in word):
@@ -51,8 +92,15 @@ def get_psuedoword(word, t):
         return DIGIT_AND_COMMA
     if all(c in DIGITS_SET.union('.') for c in word):
         return DIGIT_AND_PERIOD
-    if word.isnumeric():
-        return OTHER_NUMBER
+
+    for i in range(len(PREFIXES)):
+        if word.endswith(PREFIXES_STRINGS[i]):
+            return PREFIXES[i]
+
+    for i in range(len(SUFFIXES)):
+        if word.endswith(SUFFIXES_STRINGS[i]):
+            return SUFFIXES[i]
+
     return UNKNOWN_WORD
 
 
@@ -63,16 +111,18 @@ def replace_with_psuedowords(data, n):
             word_count[word] = word_count.get(word, 0) + 1
     processed_data = []
     words = set()
+    rare_words = set()
     for i, sentence in enumerate(data):
         for t in range(len(sentence)):
             if word_count[sentence[t][0]] <= n:
+                rare_words.add(sentence[t][0])
                 sentence[t] = (get_psuedoword(sentence[t][0], t), sentence[t][1])
             else:
                 words.add(sentence[t][0])
             processed_data.append(sentence)
 
     words = list(words | PSUEDOWORDS)
-    return processed_data, words
+    return processed_data, words, rare_words
 
 
 class Baseline(object):
@@ -99,7 +149,7 @@ class Baseline(object):
 
         # create word2pos dict - word to its most likely PoS tag
         word2pos = np.argmax(tag_freq.reshape(-1, 1) * emissions, axis=0)
-        word2pos = np.array(pos_tags)[word2pos]
+        word2pos = np.array(training_pos_tags)[word2pos]
         word2pos = {self.words[i]: word2pos[i] for i in range(self.words_size)}
 
         return word2pos
@@ -134,14 +184,12 @@ class Baseline(object):
 
 class BigramHMM(object):
 
-    def __init__(self, training_data, words, pos_tags, add_one=False, psuedowords=False, n=2,
-                 compute_confusion=False):
+    def __init__(self, training_data, words, pos_tags, add_one=False, psuedowords=False, n=2):
         self.add_one = add_one
         self.psuedowords = psuedowords
-        self.compute_confusion = compute_confusion
         if psuedowords:
             self.n = n
-            training_data, self.words = replace_with_psuedowords(training_data, n)
+            training_data, self.words, rare_words = replace_with_psuedowords(training_data, n)
         elif add_one:
             self.words = words + [UNKNOWN_WORD]
         else:
@@ -152,7 +200,6 @@ class BigramHMM(object):
         self.words_size = len(self.words)
         self.word2i = {word: i for (i, word) in enumerate(self.words)}
         self.pos2i = {pos: i for (i, pos) in enumerate(self.pos_tags)}
-        self.confusion_mat = np.zeros((self.pos_size, self.pos_size))
 
         self.transitions, self.emissions = self.train(training_data)
         self.log_transitions, self.log_emissions = np.log(self.transitions), np.log(self.emissions)
@@ -228,7 +275,7 @@ class BigramHMM(object):
 
         # back tracing:
         sentence_tags[-1] = np.argmax(pi)
-        for i in range(n-2, 0, -1):
+        for i in range(n-2, -1, -1):
             bp = paths.pop()
             sentence_tags[i] = bp[sentence_tags[i+1]]
             sentence_tags[i+1] = self.pos_tags[sentence_tags[i+1]]
@@ -280,35 +327,46 @@ class BigramHMM(object):
         else:
             return total_error, known_words_error, unknown_words_error
 
-    def get_confusion_mat(self):
-        return self.confusion_mat
+    def get_confusion_mat(self, test_set, all_pos_tags):
+        all_pos_size = len(all_pos_tags)
+        allpos2i = {pos: i for (i, pos) in enumerate(all_pos_tags)}
+        confusion_mat = np.zeros((all_pos_size, all_pos_size))
+        X = [[word_pos_tuple[0] for word_pos_tuple in sentence] for sentence in test_set]
+        for i, sentence in enumerate(test_set):
+            y_i_hat, unknown_words_ind = self.viterbi(X[i])
+            for t, (word, pos_tag) in enumerate(sentence):
+                confusion_mat[allpos2i[pos_tag], allpos2i[y_i_hat[t]]] += 1
+        return confusion_mat
 
 
 if __name__ == '__main__':
-    SHUFFLE = False
-    # if SHUFFLE:
-    #     data = list(data)
-    #     random.shuffle(data)
     data = brown.tagged_sents(categories=['news'])[:]
+    SHUFFLE = True
+    if SHUFFLE:
+        data = list(data)
+        random.shuffle(data)
     training_set_last_i = int(len(data) * 0.9)
     training_set = data[:training_set_last_i]
     test_set = data[training_set_last_i:-1]
     training_words = list({word_pos_tuple[0] for sentence in training_set for word_pos_tuple in sentence})
-    pos_tags = list({word_pos_tuple[1] for sentence in training_set for word_pos_tuple in sentence})
+    training_pos_tags = list({word_pos_tuple[1] for sentence in training_set for word_pos_tuple in sentence})
+    all_pos_tags = list({word_pos_tuple[1] for sentence in data for word_pos_tuple in sentence})
 
     models = []
-    # models.append(Baseline(training_set, training_words, pos_tags))
-    # models.append(BigramHMM(training_set, training_words, pos_tags))
-    # models.append(BigramHMM(training_set, training_words, pos_tags, add_one=True))
-    # for n in range(1, 6):
-    #     models.append(BigramHMM(training_set, training_words, pos_tags, psuedowords=True, n=n))
-    #     models.append(BigramHMM(training_set, training_words, pos_tags,
-    #                             psuedowords=True, n=n, add_one=True, compute_confusion=True))
+    models.append(Baseline(training_set, training_words, training_pos_tags))
+    models.append(BigramHMM(training_set, training_words, training_pos_tags))
+    models.append(BigramHMM(training_set, training_words, training_pos_tags, add_one=True))
+    for n in range(1, 3):
+        models.append(BigramHMM(training_set, training_words, training_pos_tags, psuedowords=True, n=n))
+        models.append(BigramHMM(training_set, training_words, training_pos_tags,
+                                psuedowords=True, n=n, add_one=True))
+    for model in models:
+        model.test_error(test_set)
 
-    test = BigramHMM(training_set, training_words, pos_tags,
-                     psuedowords=True, n=1, add_one=True, compute_confusion=True)
+    test = BigramHMM(training_set, training_words, training_pos_tags,
+                     psuedowords=True, n=1, add_one=True)
     test.test_error(test_set)
-    print(test.get_confusion_mat())
+    print(test.get_confusion_mat(test_set, all_pos_tags))
 
 
 
