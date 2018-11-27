@@ -146,6 +146,7 @@ class Baseline(object):
                 emissions[self.pos2i[pos_tag], self.word2i[word]] += 1
         emissions /= tag_freq.reshape(-1, 1)
         tag_freq /= np.sum(tag_freq)
+        np.nan_to_num(emissions, copy=False)
 
         # create word2pos dict - word to its most likely PoS tag
         word2pos = np.argmax(tag_freq.reshape(-1, 1) * emissions, axis=0)
@@ -202,7 +203,7 @@ class BigramHMM(object):
         self.pos2i = {pos: i for (i, pos) in enumerate(self.pos_tags)}
 
         self.transitions, self.emissions = self.train(training_data)
-        self.log_transitions, self.log_emissions = np.log(self.transitions), np.log(self.emissions)
+        # self.log_transitions, self.log_emissions = np.log(self.transitions), np.log(self.emissions)
 
     def train(self, data):
         # compute transition & emission probabilities
@@ -223,12 +224,15 @@ class BigramHMM(object):
             pos_count[self.pos2i[END_STATE]] += 1
 
         states_count = transitions.sum(axis=1)
-        states_count[self.pos2i[END_STATE]] = 1  # to avoid division by zero (no state follows END_STATE)
+        # states_count[self.pos2i[END_STATE]] = 1  # to avoid division by zero (no state follows END_STATE)
         if self.add_one:
             emissions = emissions + 1
             pos_count = pos_count + self.words_size
         transitions /= states_count.reshape(-1, 1)
+
         emissions /= pos_count.reshape(-1, 1)
+        np.nan_to_num(emissions, copy=False)
+        np.nan_to_num(transitions, copy=False)
 
         return transitions, emissions
 
@@ -265,11 +269,11 @@ class BigramHMM(object):
         for i in range(1, n):
             # pi(t, v) matrix - before taking maximum over previous state w:
             # (emission probabilities are not needed for maximizing pi(t, v) over w)
-            pi = self.transitions * pi.reshape(-1, 1)
+            pi = self.transitions * pi.reshape(-1, 1) * self.get_emission_probs(sentence[i], unknown_words_ind, i).reshape(1, -1)
             bp = np.argmax(pi, axis=0)
             # pi = pi.max(axis=0) * self.get_emission_probs(sentence[i], unknown_words_ind, i)
             # pi_t(i) column - after maximization, with emission probabilities:
-            pi = self.get_emission_probs(sentence[i], unknown_words_ind, i) * pi[bp, self.pos_axis]
+            pi = pi[bp, self.pos_axis] # self.get_emission_probs(sentence[i], unknown_words_ind, i)
             paths[i-1] = bp
         pi = self.transitions[:, self.pos2i[END_STATE]] * pi
 
@@ -280,6 +284,9 @@ class BigramHMM(object):
             sentence_tags[i] = bp[sentence_tags[i+1]]
             sentence_tags[i+1] = self.pos_tags[sentence_tags[i+1]]
         sentence_tags[0] = self.pos_tags[sentence_tags[0]]
+        # print(sentence_tags)
+        # print(sentence)
+        # exit(55)
         return sentence_tags, unknown_words_ind
 
     def test_error(self, test_set, print_results=True):
@@ -341,7 +348,7 @@ class BigramHMM(object):
 
 if __name__ == '__main__':
     data = brown.tagged_sents(categories=['news'])[:]
-    SHUFFLE = True
+    SHUFFLE = False
     if SHUFFLE:
         data = list(data)
         random.shuffle(data)
@@ -352,7 +359,8 @@ if __name__ == '__main__':
     training_pos_tags = list({word_pos_tuple[1] for sentence in training_set for word_pos_tuple in sentence})
     all_pos_tags = list({word_pos_tuple[1] for sentence in data for word_pos_tuple in sentence})
 
-    models = []
+    training_pos_tags = all_pos_tags
+    models = list()
     models.append(Baseline(training_set, training_words, training_pos_tags))
     models.append(BigramHMM(training_set, training_words, training_pos_tags))
     models.append(BigramHMM(training_set, training_words, training_pos_tags, add_one=True))
