@@ -2,6 +2,7 @@ from nltk.corpus import brown
 import random
 from string import digits
 import numpy as np
+import pandas as pd
 
 START_STATE = 'START'
 END_STATE = 'END'
@@ -21,6 +22,10 @@ ALL_CAPS = '*ALL_CAPS*'
 CAP_PERIOD = '*CAP_PERIOD*'
 FIRST_WORD = '*FIRST_WORD*'
 INIT_CAP = '*INIT_CAP*'
+OTHER_WORD = '*OTHER_WORD*'
+
+PSUEDOWORDS = {TWO_DIGIT_NUM, FOUR_DIGIT_NUM, DIGIT_AND_ALPHA, DIGIT_AND_DASH, DIGIT_AND_SLASH, DIGIT_AND_COMMA,
+               DIGIT_AND_PERIOD, OTHER_NUMBER, ALL_CAPS, CAP_PERIOD, FIRST_WORD, INIT_CAP, OTHER_WORD}
 
 PREFIX_ANTI = '*ANTI*'
 PREFIX_DIS = '*DIS*'
@@ -60,13 +65,17 @@ SUFFIXES = [SUFFIX_ABLE, SUFFIX_IBLE, SUFFIX_IAL, SUFFIX_EN, SUFFIX_ER, SUFFIX_A
 SUFFIXES_STRINGS = ['able', 'ible', 'ial', 'en', 'er', 'al', 'est', 'ful', 'ic',
                     'itive', 'ative', 'ive', 'less', 'ly', 'ment', 'ness']
 
-PSUEDOWORDS = {TWO_DIGIT_NUM, FOUR_DIGIT_NUM, DIGIT_AND_ALPHA, DIGIT_AND_DASH, DIGIT_AND_SLASH, DIGIT_AND_COMMA,
-               DIGIT_AND_PERIOD, OTHER_NUMBER, ALL_CAPS, CAP_PERIOD, FIRST_WORD, INIT_CAP, UNKNOWN_WORD}
 PSUEDOWORDS |= set(SUFFIXES)
 PSUEDOWORDS |= set(PREFIXES)
 
 
 def get_psuedoword(word, t):
+    '''
+    return the psuedoword matching the given word.
+    :param word: string representing a word in a sentence
+    :param t: the word's location in the sentence
+    :return: psuedoword matching the given word
+    '''
     if word.isupper():
         if len(word) == 2 and word[1] == '.':
             return CAP_PERIOD
@@ -101,10 +110,17 @@ def get_psuedoword(word, t):
         if word.endswith(SUFFIXES_STRINGS[i]):
             return SUFFIXES[i]
 
-    return UNKNOWN_WORD
+    return OTHER_WORD
 
 
 def replace_with_psuedowords(data, n):
+    '''
+    computes the frequency of each word in the data set and replaces all low frequency
+    words (occuring <= n times in the data set) with psuedowords.
+    :param data: data set
+    :param n: frequency threshold
+    :return: data set after processing
+    '''
     word_count = dict()
     for sentence in data:
         for word, pos_tag in sentence:
@@ -126,8 +142,17 @@ def replace_with_psuedowords(data, n):
 
 
 class Baseline(object):
+    '''
+    Most likely tag baseline
+    '''
 
     def __init__(self, training_data, words, pos_tags):
+        '''
+        :param training_data: training data.
+        :param words: list of all words in the training data.
+        :param pos_tags: list of all PoS tags in the data (including the PoS tags in
+               the test set, for calculating the confusion matrix).
+        '''
         self.words = words
         self.pos_tags = pos_tags
         self.pos_size = len(self.pos_tags)
@@ -137,6 +162,11 @@ class Baseline(object):
         self.word2pos = self.train(training_data)
 
     def train(self, data):
+        '''
+        train the model.
+        :param data: training data
+        :return: a dictionary mapping from word to its most likely tag
+        '''
         # calculate P(tag | word) for every tag and every word
         tag_freq = np.zeros(self.pos_size)
         emissions = np.zeros((self.pos_size, self.words_size))
@@ -150,12 +180,18 @@ class Baseline(object):
 
         # create word2pos dict - word to its most likely PoS tag
         word2pos = np.argmax(tag_freq.reshape(-1, 1) * emissions, axis=0)
-        word2pos = np.array(training_pos_tags)[word2pos]
+        word2pos = np.array(pos_tags)[word2pos]
         word2pos = {self.words[i]: word2pos[i] for i in range(self.words_size)}
 
         return word2pos
 
     def test_error(self, test_set, print_results=True):
+        '''
+        compute test error.
+        :param test_set: test set
+        :param print_results: To print or not to print
+        :return: a tuple: total error, known words error, unknown words error
+        '''
         n_known_words = 0
         n_unknown_words = 0
         n_known_words_incorrect_tag = 0
@@ -179,13 +215,34 @@ class Baseline(object):
             print('MLE Baseline model:')
             print('Total error:', total_error,
                   '\nKnown words error:', known_words_error,
-                  '\nUnknown words error:', unknown_words_error)
+                  '\nUnknown words error:', unknown_words_error,
+                  '\n')
         return total_error, known_words_error, unknown_words_error
 
 
 class BigramHMM(object):
+    '''
+    Bigram HMM models (with options to use add-one smoothing and psuedo-words).
+    '''
 
-    def __init__(self, training_data, words, pos_tags, add_one=False, psuedowords=False, n=2):
+    def __init__(self, training_data, words, pos_tags,
+                 tag_unknown_words='uniform',
+                 add_one=False,
+                 psuedowords=False, n=2):
+        '''
+        :param training_data: training data.
+        :param words: list of all words in the training data.
+        :param pos_tags: list of all PoS tags in the data (including the PoS tags in
+               the test set, for calculating the confusion matrix).
+        :param tag_unknown_words: How to handle unknown words in the simple HMM model,
+                                  when not using add-one or psuedo-words.
+                                    uniform - uniform distribution over all PoS tags
+                                    NN      - tag as NN
+        :param add_one: To do or not to do (add-one smoothing)
+        :param psuedowords: To do or not to do (psuedo-words)
+        :param n: frequency threshold for psuedo-words. only relevant if psuedowords=True
+        '''
+        self.tag_unknown_words = tag_unknown_words
         self.add_one = add_one
         self.psuedowords = psuedowords
         if psuedowords:
@@ -203,9 +260,13 @@ class BigramHMM(object):
         self.pos2i = {pos: i for (i, pos) in enumerate(self.pos_tags)}
 
         self.transitions, self.emissions = self.train(training_data)
-        # self.log_transitions, self.log_emissions = np.log(self.transitions), np.log(self.emissions)
 
     def train(self, data):
+        '''
+        train the model.
+        :param data: training data
+        :return: numpy arrays of transitions & emissions probabilities
+        '''
         # compute transition & emission probabilities
         transitions = np.zeros((self.pos_size, self.pos_size))
         emissions = np.zeros((self.pos_size, self.words_size))
@@ -224,19 +285,26 @@ class BigramHMM(object):
             pos_count[self.pos2i[END_STATE]] += 1
 
         states_count = transitions.sum(axis=1)
-        # states_count[self.pos2i[END_STATE]] = 1  # to avoid division by zero (no state follows END_STATE)
         if self.add_one:
             emissions = emissions + 1
             pos_count = pos_count + self.words_size
         transitions /= states_count.reshape(-1, 1)
 
         emissions /= pos_count.reshape(-1, 1)
-        np.nan_to_num(emissions, copy=False)
+        np.nan_to_num(emissions, copy=False)  # replaces missing values with 0
         np.nan_to_num(transitions, copy=False)
 
         return transitions, emissions
 
     def get_emission_probs(self, word, unknown_words_indices, t):
+        '''
+        get the emission probabilities of one word.
+        :param word: word from sentence
+        :param unknown_words_indices: a list of unknown word indices, used for updating it
+               in case this word is unknown as well (for calculating unknown words error)
+        :param t: the word's location in the sentence
+        :return: numpy vector of this word's emission probabilities
+        '''
         if self.psuedowords:
             if word not in self.word2i:
                 unknown_words_indices.add(t)
@@ -248,32 +316,41 @@ class BigramHMM(object):
                 unknown_words_indices.add(t)
             return self.emissions[:, self.word2i.get(word, self.word2i[UNKNOWN_WORD])]
 
-        # else, add_one=False, psuedo_words=False
         if word not in self.word2i:
             unknown_words_indices.add(t)
-            emission_probs = np.ones(self.pos_size)/self.pos_size
-            # selected_pos_tag_i = self.pos2i['NN']  # random.choice(self.pos_axis)
-            # emission_probs = np.zeros(self.pos_size)
-            # emission_probs[selected_pos_tag_i] = 1
+            if self.tag_unknown_words == 'uniform':
+                emission_probs = np.ones(self.pos_size)/self.pos_size
+            elif self.tag_unknown_words == 'NN':
+                selected_pos_tag_i = self.pos2i['NN']  # random.choice(self.pos_axis)
+                emission_probs = np.zeros(self.pos_size)
+                emission_probs[selected_pos_tag_i] = 1
             return emission_probs
 
         return self.emissions[:, self.word2i[word]]
 
     def viterbi(self, sentence):
+        '''
+        Viterbi algorithm for HMM
+        :param sentence: sentence to tag.
+        :return: A tuple:
+                    sentence_tags - list of the sentence's tags
+                    unknown_words_ind - indices of all of the unknown words in the sentence
+        '''
         unknown_words_ind = set()
         n = len(sentence)
-        pi = self.transitions[self.pos2i[START_STATE], :] * self.get_emission_probs(sentence[0], unknown_words_ind, 0)
         paths = list(range(n - 1))
         sentence_tags = list(range(n))
 
+        # forward pass:
+        pi = self.transitions[self.pos2i[START_STATE], :] *\
+             self.get_emission_probs(sentence[0], unknown_words_ind, 0)
         for i in range(1, n):
             # pi(t, v) matrix - before taking maximum over previous state w:
-            # (emission probabilities are not needed for maximizing pi(t, v) over w)
-            pi = self.transitions * pi.reshape(-1, 1) * self.get_emission_probs(sentence[i], unknown_words_ind, i).reshape(1, -1)
+            pi = self.transitions * pi.reshape(-1, 1) *\
+                 self.get_emission_probs(sentence[i], unknown_words_ind, i).reshape(1, -1)
             bp = np.argmax(pi, axis=0)
-            # pi = pi.max(axis=0) * self.get_emission_probs(sentence[i], unknown_words_ind, i)
             # pi_t(i) column - after maximization, with emission probabilities:
-            pi = pi[bp, self.pos_axis] # self.get_emission_probs(sentence[i], unknown_words_ind, i)
+            pi = pi[bp, self.pos_axis]
             paths[i-1] = bp
         pi = self.transitions[:, self.pos2i[END_STATE]] * pi
 
@@ -284,27 +361,25 @@ class BigramHMM(object):
             sentence_tags[i] = bp[sentence_tags[i+1]]
             sentence_tags[i+1] = self.pos_tags[sentence_tags[i+1]]
         sentence_tags[0] = self.pos_tags[sentence_tags[0]]
-        # print(sentence_tags)
-        # print(sentence)
-        # exit(55)
+
         return sentence_tags, unknown_words_ind
 
     def test_error(self, test_set, print_results=True):
+        '''
+            compute test error.
+            :param test_set: test set
+            :param print_results: To print or not to print
+            :return: a tuple: total error, known words error, unknown words error
+        '''
         n_known_words = 0
         n_unknown_words = 0
         n_known_words_incorrect_tag = 0
         n_unknown_words_incorrect_tag = 0
         X = [[word_pos_tuple[0] for word_pos_tuple in sentence] for sentence in test_set]
-        # y = [[word_pos_tuple[1] for word_pos_tuple in sentence] for sentence in test_set]
 
         for i, sentence in enumerate(test_set):
             y_i_hat, unknown_words_ind = self.viterbi(X[i])
-            # print(y_i_hat)
             for t, (word, pos_tag) in enumerate(sentence):
-                # if self.compute_confusion:
-                    # print(self.pos2i[pos_tag])
-                    # print(self.pos2i[y_i_hat[t]])
-                    # self.confusion_mat[self.pos2i[pos_tag], self.pos2i[y_i_hat[t]]] += 1
                 if t in unknown_words_ind:
                     n_unknown_words += 1
                     if pos_tag != y_i_hat[t]:
@@ -314,7 +389,8 @@ class BigramHMM(object):
                     if y_i_hat[t] != pos_tag:
                         n_known_words_incorrect_tag += 1
 
-        total_error = (n_known_words_incorrect_tag + n_unknown_words_incorrect_tag) / (n_known_words + n_unknown_words)
+        total_error = (n_known_words_incorrect_tag + n_unknown_words_incorrect_tag) /\
+                      (n_known_words + n_unknown_words)
         known_words_error = n_known_words_incorrect_tag / n_known_words
         unknown_words_error = n_unknown_words_incorrect_tag / n_unknown_words
 
@@ -331,54 +407,97 @@ class BigramHMM(object):
                   '\nKnown words error:', known_words_error,
                   '\nUnknown words error:', unknown_words_error,
                   '\n')
-        else:
-            return total_error, known_words_error, unknown_words_error
+        return total_error, known_words_error, unknown_words_error
 
-    def get_confusion_mat(self, test_set, all_pos_tags):
-        all_pos_size = len(all_pos_tags)
-        allpos2i = {pos: i for (i, pos) in enumerate(all_pos_tags)}
-        confusion_mat = np.zeros((all_pos_size, all_pos_size))
+    def get_confusion_mat(self, test_set):
+        '''
+        compute confusion matrix.
+        '''
+        confusion_mat = np.zeros((self.pos_size, self.pos_size))
         X = [[word_pos_tuple[0] for word_pos_tuple in sentence] for sentence in test_set]
         for i, sentence in enumerate(test_set):
             y_i_hat, unknown_words_ind = self.viterbi(X[i])
             for t, (word, pos_tag) in enumerate(sentence):
-                confusion_mat[allpos2i[pos_tag], allpos2i[y_i_hat[t]]] += 1
+                confusion_mat[self.pos2i[pos_tag], self.pos2i[y_i_hat[t]]] += 1
         return confusion_mat
 
 
 if __name__ == '__main__':
     data = brown.tagged_sents(categories=['news'])[:]
+    # shuffle data before building training & test sets
     SHUFFLE = False
     if SHUFFLE:
         data = list(data)
         random.shuffle(data)
+
+    # build training & data sets, vocabulary and PoS tags list
     training_set_last_i = int(len(data) * 0.9)
     training_set = data[:training_set_last_i]
     test_set = data[training_set_last_i:-1]
     training_words = list({word_pos_tuple[0] for sentence in training_set for word_pos_tuple in sentence})
-    training_pos_tags = list({word_pos_tuple[1] for sentence in training_set for word_pos_tuple in sentence})
-    all_pos_tags = list({word_pos_tuple[1] for sentence in data for word_pos_tuple in sentence})
+    pos_tags = sorted(list({word_pos_tuple[1] for sentence in data for word_pos_tuple in sentence}))
 
-    training_pos_tags = all_pos_tags
+    # train and test all models
     models = list()
-    models.append(Baseline(training_set, training_words, training_pos_tags))
-    models.append(BigramHMM(training_set, training_words, training_pos_tags))
-    models.append(BigramHMM(training_set, training_words, training_pos_tags, add_one=True))
-    for n in range(1, 3):
-        models.append(BigramHMM(training_set, training_words, training_pos_tags, psuedowords=True, n=n))
-        models.append(BigramHMM(training_set, training_words, training_pos_tags,
-                                psuedowords=True, n=n, add_one=True))
-    for model in models:
-        model.test_error(test_set)
+    models_names = list()
 
-    test = BigramHMM(training_set, training_words, training_pos_tags,
-                     psuedowords=True, n=1, add_one=True)
-    test.test_error(test_set)
-    print(test.get_confusion_mat(test_set, all_pos_tags))
+    models_names.append('Baseline')
+    models.append(Baseline(training_set, training_words, pos_tags))
+    models_names.append('Bigram HMM -  Unknown words as NN')
+    models.append(BigramHMM(training_set, training_words, pos_tags, tag_unknown_words='NN'))
+    models_names.append('Bigram HMM -  Unknown words with uniform emission')
+    models.append(BigramHMM(training_set, training_words, pos_tags))
+    models_names.append('Bigram HMM + add-1')
+    models.append(BigramHMM(training_set, training_words, pos_tags, add_one=True))
+    models_names.append('Bigram HMM + psuedo, freq=2')
+    models.append(BigramHMM(training_set, training_words, pos_tags, psuedowords=True, n=2))
+    models_names.append('Bigram HMM + psuedo + add-1, freq=2')
+    models.append(BigramHMM(training_set, training_words, pos_tags,
+                            psuedowords=True, n=2, add_one=True))
+    models_names.append('Bigram HMM + psuedo, freq=1')
+    models.append(BigramHMM(training_set, training_words, pos_tags, psuedowords=True, n=1))
+    models_names.append('Bigram HMM + psuedo + add-1, freq=1')
+    models.append(BigramHMM(training_set, training_words, pos_tags,
+                            psuedowords=True, n=1, add_one=True))
 
+    # compare frequency parameter
+    pwords_models = list()
+    pwords_models_names = list()
+    max_freq = 5
+    for n in range(1, max_freq + 1):
+        pwords_models_names.append('Bigram HMM + psuedo, freq=' + str(n))
+        pwords_models.append(BigramHMM(training_set, training_words, pos_tags, psuedowords=True, n=n))
+    for n in range(1, max_freq + 1):
+        pwords_models_names.append('Bigram HMM + psuedo + add-1, freq=' + str(n))
+        pwords_models.append(BigramHMM(training_set, training_words, pos_tags,
+                                       psuedowords=True, n=n, add_one=True))
 
+    # dump error charts
+    index = ['Total error', 'Known words error', 'Unknown words error']
+    errors = [model.test_error(test_set, print_results=True) for model in models]
+    models_errors = pd.DataFrame(np.array(errors).T, columns=models_names, index=index)
 
+    errors = [model.test_error(test_set, print_results=False) for model in pwords_models]
+    pwords_errors = pd.DataFrame(np.array(errors).T, columns=pwords_models_names, index=index)
 
+    models_errors.to_csv('models_errors.csv')
+    pwords_errors.to_csv('pwords_frequency.csv')
 
+    # dump confusiom matrix to file for investigating the most frequent errors
+    confusion_mat_model = models[-1]
+    confusion_mat = confusion_mat_model.get_confusion_mat(test_set)
+    pd.DataFrame(confusion_mat, columns=confusion_mat_model.pos_tags,
+                 index=confusion_mat_model.pos_tags).to_csv('confusion_matrix.csv')
 
+    # create a list of most frequent errors
+    np.fill_diagonal(confusion_mat, 0)
+    confusion_err_feq = confusion_mat / confusion_mat.sum()
+    frequent_errors_i = np.argwhere(confusion_err_feq > 0.005).tolist()
 
+    frequent_errors = list()
+    for true_pos_i, predicted_pos_i in frequent_errors_i:
+        frequent_errors.append((confusion_mat_model.pos_tags[true_pos_i],
+                                confusion_mat_model.pos_tags[predicted_pos_i],
+                                confusion_mat[true_pos_i, predicted_pos_i]))
+    pd.DataFrame(np.array(frequent_errors), columns=['True tag', 'Predicted Tag', '#']).\
+        to_csv('frequent_errors.csv')
